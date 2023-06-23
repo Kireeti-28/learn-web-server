@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 	"time"
 )
@@ -23,15 +25,20 @@ func main() {
 	mux := http.NewServeMux()
 	// Middleware function that adds CORS headers
 	corsMux := middlewareCors(mux)
+
+	mux.Handle("/", http.FileServer(http.Dir(".")))
+
 	// Specify address
 	const addr = ":8080"
 
 	server := http.Server{
-		Handler: corsMux,
-		Addr: addr,
+		Handler:      corsMux,
+		Addr:         addr,
 		WriteTimeout: 30 * time.Second,
-		ReadTimeout: 30 * time.Second,
+		ReadTimeout:  30 * time.Second,
 	}
 	// start server
-	server.ListenAndServe()
+	fmt.Println("Starting server on port ", addr)
+	err := server.ListenAndServe()
+	log.Fatal(err)
 }
