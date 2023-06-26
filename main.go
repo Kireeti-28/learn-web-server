@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 type apiConfig struct {
@@ -44,22 +46,24 @@ func (cfg *apiConfig) metricHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	mux := http.NewServeMux()
-	corsMux := middlewareCors(mux)
+
+	r := chi.NewRouter()
+	r.Use(middlewareCors)
 
 	config := apiConfig{}
+	handler := config.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir("."))))
 
-	mux.Handle("/app/", config.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
+	r.Handle("/app/*", handler)
+	r.Handle("/app", handler)
 
-	mux.HandleFunc("/healthz", healthzHandler)
-
-	mux.HandleFunc("/metrics", config.metricHandler)
+	r.Get("/healthz", healthzHandler)
+	r.Get("/metrics", config.metricHandler)
 
 	// Specify address
 	const addr = ":8080"
 
 	server := http.Server{
-		Handler:      corsMux,
+		Handler:      r,
 		Addr:         addr,
 		WriteTimeout: 30 * time.Second,
 		ReadTimeout:  30 * time.Second,
@@ -67,5 +71,7 @@ func main() {
 	// start server
 	fmt.Println("Starting server on port ", addr)
 	err := server.ListenAndServe()
-	log.Fatal(err)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
