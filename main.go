@@ -2,17 +2,22 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/kireeti-28/learn-web-server/internal/database"
 )
 
 type apiConfig struct {
 	fileserverHits int
+	DB             *database.DB
 }
 
 func middlewareCors(next http.Handler) http.Handler {
@@ -28,135 +33,211 @@ func middlewareCors(next http.Handler) http.Handler {
 	})
 }
 
-func healthzHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
-	w.Write([]byte("Ok"))
-}
+/*
+	func healthzHandler(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(200)
+		w.Write([]byte("Ok"))
+	}
 
-func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg.fileserverHits = cfg.fileserverHits + 1
+	func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cfg.fileserverHits = cfg.fileserverHits + 1
 
-		next.ServeHTTP(w, r)
-	})
-}
+			next.ServeHTTP(w, r)
+		})
+	}
 
-func (cfg *apiConfig) metricHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html")
-	resp := fmt.Sprintf(`<html>
+	func (cfg *apiConfig) metricHandler(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		resp := fmt.Sprintf(`<html>
 
 <body>
-    <h1>Welcome, Chirpy Admin</h1>
-    <p>Chirpy has been visited %d times!</p>
+
+	<h1>Welcome, Chirpy Admin</h1>
+	<p>Chirpy has been visited %d times!</p>
+
 </body>
 
 </html>
-	`, cfg.fileserverHits)
-	w.Write([]byte(resp))
-	fmt.Printf("Hits: %d\n", cfg.fileserverHits)
+
+		`, cfg.fileserverHits)
+		w.Write([]byte(resp))
+		fmt.Printf("Hits: %d\n", cfg.fileserverHits)
+	}
+
+	type reqBody struct {
+		Body string `json:"body"`
+	}
+
+	type errorRespBody struct {
+		Error string `json:"error"`
+	}
+
+	type validRespBody struct {
+		Valid bool `json:"valid"`
+	}
+
+	type cleanRespBody struct {
+		Cleaned_body string `json:"cleaned_body"`
+	}
+*/
+
+func (cfg *apiConfig) getChripsIdHandler(w http.ResponseWriter, r *http.Request) {
+	dbChirps, err := cfg.DB.GetChirps()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve chirps")
+		return
+	}
+
+	chirps := []database.Chirp{}
+	for _, dbChirp := range dbChirps {
+		chirps = append(chirps, database.Chirp{
+			ID:    dbChirp.ID,
+			Email: dbChirp.Email,
+		})
+	}
+
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+
+	for _, dat := range chirps {
+		if dat.ID == id {
+			respondWithJSON(w, http.StatusOK, dat)
+			return
+		}
+	}
+
+	respondWithError(w, http.StatusNotFound, "not found id")
 }
 
-type reqBody struct {
-	Body string `json:"body"`
+func (cfg *apiConfig) getChripsHandler(w http.ResponseWriter, r *http.Request) {
+	dbChirps, err := cfg.DB.GetChirps()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't retrieve chirps")
+		return
+	}
+
+	chirps := []database.Chirp{}
+	for _, dbChirp := range dbChirps {
+		chirps = append(chirps, database.Chirp{
+			ID:    dbChirp.ID,
+			Email: dbChirp.Email,
+		})
+	}
+
+	sort.Slice(chirps, func(i, j int) bool {
+		return chirps[i].ID < chirps[j].ID
+	})
+
+	respondWithJSON(w, http.StatusOK, chirps)
 }
 
-type errorRespBody struct {
-	Error string `json:"error"`
-}
-
-type validRespBody struct {
-	Valid bool `json:"valid"`
-}
-
-type cleanRespBody struct {
-	Cleaned_body string `json:"cleaned_body"`
-}
-
-func respondWithError(w http.ResponseWriter, statusCode int, body errorRespBody) {
-	dat, _ := json.Marshal(body)
-	w.WriteHeader(statusCode)
-	w.Write(dat)
-}
-
-func validateChirpHandler(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) postChripHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
 
 	decoder := json.NewDecoder(r.Body)
-	params := reqBody{}
+	params := parameters{}
 	err := decoder.Decode(&params)
 	if err != nil {
-		respBody := errorRespBody{
-			Error: "Something went wrong",
-		}
-		respondWithError(w, http.StatusInternalServerError, respBody)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
 		return
 	}
 
-	if len(params.Body) > 140 {
-		respBody := errorRespBody{
-			Error: "Chirp is too long",
-		}
-		respondWithError(w, http.StatusBadRequest, respBody)
-		return
-	}
-
-	respBody := validRespBody{
-		Valid: true,
-	}
-
-	dat, err := json.Marshal(respBody)
+	cleaned, err := validateChirp(params.Body)
 	if err != nil {
-		respBody := errorRespBody{
-			Error: "Something went wrong",
-		}
-		respondWithError(w, http.StatusInternalServerError, respBody)
+		respondWithError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	loweredText := strings.ToLower(params.Body)
-	loweredTextSlice := strings.Split(loweredText, " ")
+	chirp, err := cfg.DB.CreateChirp(cleaned)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create chirp")
+		return
+	}
 
-	cleanTextSlice := []string{}
+	respondWithJSON(w, http.StatusCreated, database.Chirp{
+		ID:    chirp.ID,
+		Email: chirp.Email,
+	})
 
-	for _, word := range(loweredTextSlice) {
-		if word == "kerfuffle" || word == "sharbert" || word == "fornax" {
-			cleanTextSlice = append(cleanTextSlice, "****")
-		} else {
-			cleanTextSlice = append(cleanTextSlice, word)
+}
+
+func validateChirp(body string) (string, error) {
+	const maxChirpLength = 140
+	if len(body) > maxChirpLength {
+		return "", errors.New("Chirp is too long")
+	}
+
+	badWords := map[string]struct{}{
+		"kerfuffle": {},
+		"sharbert":  {},
+		"fornax":    {},
+	}
+	cleaned := getCleanedBody(body, badWords)
+	return cleaned, nil
+}
+
+func getCleanedBody(body string, badWords map[string]struct{}) string {
+	words := strings.Split(body, " ")
+	for i, word := range words {
+		loweredWord := strings.ToLower(word)
+		if _, ok := badWords[loweredWord]; ok {
+			words[i] = "****"
 		}
 	}
+	cleaned := strings.Join(words, " ")
+	return cleaned
+}
 
-	ans := strings.Join(cleanTextSlice, " ")
-
-	cleanResp := cleanRespBody{
-		Cleaned_body: ans,
+func (cfg *apiConfig) postUserHandler(w http.ResponseWriter, r *http.Request) {
+	type user struct {
+		Email string `json:"email"`
 	}
 
-	dat, _ = json.Marshal(cleanResp)
+	decoder := json.NewDecoder(r.Body)
 
-	w.WriteHeader(200)
-	w.Write(dat)
+	req := &user{}
+	err := decoder.Decode(req)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
+		return
+	}
+
+	db, err := cfg.DB.CreateChirp(req.Email)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters")
+		return
+	}
+
+	respondWithJSON(w, http.StatusCreated, database.Chirp{
+		ID:    db.ID,
+		Email: db.Email,
+	})
+
 }
 
 func main() {
+	db, err := database.NewDB("database.json")
+	if err != nil {
+		log.Fatal(err)
+	}
 
+	cfg := apiConfig{
+		fileserverHits: 0,
+		DB:             db,
+	}
 	r := chi.NewRouter()
 	r.Use(middlewareCors)
 
-	r.Post("/api/validate_chirp", validateChirpHandler)
+	r.Get("/api/chirps", cfg.getChripsHandler)
+	r.Post("/api/chirps", cfg.postChripHandler)
+	r.Get("/api/chirps/{id}", cfg.getChripsIdHandler)
 
-	// config := apiConfig{}
-	// handler := config.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir("."))))
-
-	// r.Handle("/app/*", handler)
-	// r.Handle("/app", handler)
-
-	// apiRouter := chi.NewRouter()
-
-	// apiRouter.Get("/healthz", healthzHandler)
-	// apiRouter.Get("/metrics", config.metricHandler)
-
-	// r.Mount("/admin", apiRouter)
+	r.Post("/api/users", cfg.postUserHandler)
 
 	// Specify address
 	const addr = ":8080"
@@ -169,7 +250,7 @@ func main() {
 	}
 	// start server
 	fmt.Println("Starting server on port ", addr)
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != nil {
 		log.Fatal(err)
 	}
